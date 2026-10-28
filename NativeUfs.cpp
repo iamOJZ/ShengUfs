@@ -34,6 +34,13 @@ extern const uint8_t verified_root_key[];
 #include "TransferPoll.h"
 #include "SmmuTakeover.h"
 
+// SM8350 (haydn / lahaina): the UFS host sits behind apps_smmu stream ID 0xe0
+// (haydn-fdt.dts: ufshc@1d84000 { iommus = <&apps_smmu 0xe0 0> }). SM8550
+// (sheng) uses 0x60. The controller MMIO and UFS-HCI register offsets are
+// unchanged; only the SMMU stream identity differs.
+#define UFS_STREAM_ID 0xe0U
+
+
 static UfsRootDiagnostics gRootDiagnostic;
 static bool gRootDiagnosticEnabled;
 static void rootDiagnosticFailure (const char *reason);
@@ -269,7 +276,7 @@ static void zero32 (void *start, size_t length)
 
 // Give the UFS stream a pass-through mapping the way Linux does on this firmware.
 // Hardware 2026-10-17: after hand-off apps_smmu has sCR0 = 0x002f0406 (USFCFG=1, unmatched
-// streams fault), no stream-match entry for the UFS host (ID 0x60, `iommus = <&apps_smmu 0x60
+// streams fault), no stream-match entry for the UFS host (ID 0xe0, `iommus = <&apps_smmu 0xe0
 // 0x0>` in the board DT), a TYPE=BYPASS S2CR reads back as FAULT, and sCR0 writes are ignored.
 // Linux (drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c, qcom_smmu_cfg_probe + qcom_smmu_write_s2cr,
 // "bypass_quirk") meets exactly this: it reserves the LAST context bank (num_context_banks-1),
@@ -461,7 +468,7 @@ void NativeUfs::adoptAndRead (unsigned level)
   unsigned stopLoops = 10000;
   while ((read32 (hc, 0x60) & 1) && stopLoops--) IODelay (10);
   if (read32 (hc, 0x60) & 1) panic ("NATIVE_UFS adopt: request list did not stop");
-  smmuBypassStream (0x60, smmuMap, smmuReport, phys, 16384);
+  smmuBypassStream (UFS_STREAM_ID, smmuMap, smmuReport, phys, 16384);
   write32 (hc, 0x50, static_cast<uint32_t> (phys));
   write32 (hc, 0x54, static_cast<uint32_t> (phys >> 32));
   write32 (hc, 0x20, 0xffffffffU);  // clear stale status
@@ -805,7 +812,7 @@ void NativeUfs::dumpFirmwareList (void)
 }
 
 // Read-only dump of the apps SMMU (apps_smmu@15000000) global register space and the stream
-// match entry for the UFS stream ID 0x60 (native-ufs-probe=7). SMMUv2 layout: sCR0 0x0,
+// match entry for the UFS stream ID 0xe0 (native-ufs-probe=7). SMMUv2 layout: sCR0 0x0,
 // IDR0 0x20, sGFSR 0x48, SMR(n) 0x800+4n, S2CR(n) 0xc00+4n. Nothing is written.
 void NativeUfs::inspectSmmu (void)
 {
@@ -829,7 +836,7 @@ void NativeUfs::inspectSmmu (void)
       valid++;
       typeCount[(s2cr >> 16) & 3]++;
       uint32_t mask = (smr >> 16) & 0x7fff;
-      if (match == 0xffff && (((smr ^ 0x60U) & 0x7fffU) & ~mask) == 0) {
+      if (match == 0xffff && (((smr ^ UFS_STREAM_ID) & 0x7fffU) & ~mask) == 0) {
         match = index;
         matchSmr = smr;
         matchS2cr = s2cr;
@@ -839,7 +846,7 @@ void NativeUfs::inspectSmmu (void)
   panic ("NATIVE_UFS smmu\n"
          "scr0=%08x idr0=%08x idr1=%08x gfsr=%08x\n"
          "nsmr=%u valid=%u types t0=%u t1=%u t2=%u\n"
-         "sid0x60 match=%x smr=%08x s2cr=%08x",
+         "sid0xe0 match=%x smr=%08x s2cr=%08x",
          scr0, idr0, idr1, gfsr, count, valid, typeCount[0], typeCount[1], typeCount[2],
          match, matchSmr, matchS2cr);
 }
@@ -1021,7 +1028,7 @@ static bool hostBringUp (const char **why)
   uint32_t report[3] = { 0, 0, 0 };
   gRootDiagnostic.stage = "SMMU and request list";
   if (!hostStopQueue (why)) return false;
-  smmuBypassStream (0x60, gHost.smmuMap, report, gHost.phys, kDmaBytes);
+  smmuBypassStream (UFS_STREAM_ID, gHost.smmuMap, report, gHost.phys, kDmaBytes);
   gHost.smmu = gHost.smmuMap->getVirtualAddress ();
   // The board's WiFi endpoint (sheng-wifi=2 or more) needs a pass-through stream of its own, set up here with the same code and at the same moment as the
   // storage stream: the registers of the stream matching group are not safe to touch from another thread later (a read of the first one never returned).
