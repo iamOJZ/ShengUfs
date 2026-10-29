@@ -177,9 +177,19 @@ void NativeUfs::inspect (void)
 {
   OSSharedPtr<IOMemoryMap> gccMap, memPhyMap, hcMap;
   uintptr_t gcc = mapPhys (GCC_BASE + 0x77000, 0x1000, gccMap);
+#if HAYDN_UFS_SM8350
+  // SM8350's GCC ends at 0x9c100 and has no UFS MEM PHY GDSC block, so the SM8550
+  // 0x9e000 read is a synchronous external abort on this SoC (ESR 0x96000010).
+  uint32_t memGdsc = 0;
+#else
   uintptr_t memPhy = mapPhys (GCC_BASE + 0x9e000, 0x1000, memPhyMap);
-  if (!gcc || !memPhy) {
-    panic ("NATIVE_UFS inspect: GCC map failed gcc=%p memphy=%p", (void *) gcc, (void *) memPhy);
+  if (!memPhy) {
+    panic ("NATIVE_UFS inspect: MEM PHY GCC map failed %p", (void *) memPhy);
+  }
+  uint32_t memGdsc = read32 (memPhy, 0);
+#endif
+  if (!gcc) {
+    panic ("NATIVE_UFS inspect: GCC map failed gcc=%p", (void *) gcc);
   }
   uint32_t gdsc = read32 (gcc, GCC_UFS_PHY_GDSCR - 0x77000);
   uint32_t axi = read32 (gcc, GCC_UFS_PHY_AXI_ENABLE - 0x77000);
@@ -188,7 +198,6 @@ void NativeUfs::inspect (void)
   uint32_t txs = read32 (gcc, GCC_UFS_PHY_TX_SYMBOL0_ENABLE - 0x77000);
   uint32_t rxs = read32 (gcc, GCC_UFS_PHY_RX_SYMBOL0_ENABLE - 0x77000);
   uint32_t aux = read32 (gcc, GCC_UFS_PHY_PHY_AUX_ENABLE - 0x77000);
-  uint32_t memGdsc = read32 (memPhy, 0);
   // GDSCR bit31 PWR_ON; CBCR bit31 CLK_OFF.
   bool powered = (gdsc & 0x80000000U) != 0;
   // Hardware 2026-10-17: AXI running, AHB enabled but CLK_OFF (bit31). With bit1 (HW gating)
@@ -1578,7 +1587,9 @@ public:
   IOReturn setWriteCacheState (bool) override { return kIOReturnUnsupported; }
   IOReturn doAsyncReadWrite (IOMemoryDescriptor *, UInt64, UInt64, IOStorageAttributes *, IOStorageCompletion *) override;
 };
+#if !HAYDN_UFS_PROBE_ONLY
 OSDefineMetaClassAndStructors (NativeUfsBlock, IOBlockStorageDevice)
+#endif  // !HAYDN_UFS_PROBE_ONLY
 
 extern "C" {
 volatile uint32_t native_ufs_blocks_published = 0;
@@ -1614,6 +1625,7 @@ static void rootDiagnosticFailure (const char *reason)
   panic ("%s", gRootDiagnosticText);
 }
 
+#if !HAYDN_UFS_PROBE_ONLY
 bool NativeUfsBlock::configure (const char *name, uint64_t absoluteOffset, uint64_t size)
 {
   if (!name || !ufsWindowGeometry (absoluteOffset, size)) {
@@ -2058,6 +2070,20 @@ static void mediaReportThread (void *, wait_result_t)
   panic ("%s", gMediaReport);
 }
 
+#endif  // !HAYDN_UFS_PROBE_ONLY
+
+#if HAYDN_UFS_PROBE_ONLY
+// The page-counter declarations sit with the block layer above, which is compiled
+// out in a probe-only build; native-ufs-probe=14 still needs them.
+extern "C" {
+extern unsigned int vm_page_free_count, vm_page_active_count, vm_page_inactive_count,
+  vm_page_wire_count, vm_page_speculative_count, vm_page_purgeable_count;
+extern uint32_t vm_page_pages;
+extern unsigned int memorystatus_available_pages;
+extern int nprocs;
+}
+#endif
+
 bool NativeUfs::start (IOService *provider)
 {
   unsigned probe = 0, rootMode = 0;
@@ -2146,6 +2172,7 @@ bool NativeUfs::start (IOService *provider)
            vm_page_wire_count, vm_page_speculative_count, vm_page_purgeable_count,
            memorystatus_available_pages, max_mem, nprocs);
   }
+#if !HAYDN_UFS_PROBE_ONLY
   if (probe == 13) {
     unsigned delay = 12;
     PE_parse_boot_argn ("native-ufs-stats-delay", &delay, sizeof (delay));
@@ -2171,12 +2198,21 @@ bool NativeUfs::start (IOService *provider)
     thread_deallocate (thread);
     return true;
   }
+#endif  // !HAYDN_UFS_PROBE_ONLY
   if (rootMode && !probe) {
     return startRoot (provider);
   }
   return false;
 }
 
+#if HAYDN_UFS_PROBE_ONLY
+// The block/root layer is not built on this board, so there is nothing to publish.
+bool NativeUfs::startRoot (IOService *provider)
+{
+  (void)provider;
+  return false;
+}
+#else
 // Boot the root image's windows as block devices. Soft-fails (logs, publishes nothing).
 bool NativeUfs::startRoot (IOService *provider)
 {
@@ -2288,6 +2324,7 @@ bool NativeUfs::startRoot (IOService *provider)
   return true;
 }
 
+#endif  // !HAYDN_UFS_PROBE_ONLY
 void NativeUfs::stop (IOService *provider)
 {
   fCmdDesc.reset ();

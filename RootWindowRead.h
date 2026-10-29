@@ -3,7 +3,7 @@
 // Shared production window reader. Ops owns synchronization, block I/O,
 // integrity verification and copying to the caller. No callback runs under
 // this guard: the IOKit wrapper completes the request after this returns.
-static bool ufsWindowGeometry (uint64_t absolute, uint64_t bytes)
+static inline bool ufsWindowGeometry (uint64_t absolute, uint64_t bytes)
 {
   constexpr uint64_t limit = (uint64_t (UINT32_MAX) + 1) * 4096;
   return bytes && !(bytes & 511) && !(absolute & 4095) && absolute < limit && bytes <= limit - absolute;

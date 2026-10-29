@@ -2,7 +2,7 @@
 #pragma once
 // Shared production lifecycle decisions; adapters own IOKit objects and waits.
 struct UfsRootPlan { unsigned count = 0, order[4] = {}; };
-static bool ufsBuildRootPlan (const char *const *names, unsigned count, UfsRootPlan &plan)
+static inline bool ufsBuildRootPlan (const char *const *names, unsigned count, UfsRootPlan &plan)
 {
   plan = {};
   if (!names || count < 2 || count > 4) return false;
