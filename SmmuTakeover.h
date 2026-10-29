@@ -44,6 +44,10 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
   if (bankFromTop >= banks - 1) {p.error = "no free context bank"; return p;}
   p.bank = banks - 1 - bankFromTop;
   unsigned matches = 0;
+  // SM8350 firmware leaves SID 0xe0 on context bank 2 (a translation bank). We want a
+  // bypass bank, so that pre-existing mapping is not "conflicting": it is simply the
+  // slot we will re-point at our chosen bypass bank. Reuse it only when it is already
+  // our bank; otherwise remember the slot and keep looking for a free bank.
   for (unsigned i = 0; i < count; ++i) {
     uint32_t smr = read(0x800 + 4 * i);
     if (!(smr & 0x80000000U)) {
@@ -56,11 +60,16 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
     bool ourBank = ((s2cr >> 16) & 3) == 0 && (s2cr & 255) == p.bank;
     if (match) {
       ++matches;
-      if (matches > 1 || mask || !ourBank) {
+      if (matches > 1 || mask) {
         p.slot = i; p.smr = smr; p.s2cr = s2cr;
         p.error = "conflicting UFS stream mapping"; return p;
       }
-      p.reuse = true; p.slot = i;
+      // A single, maskless match of our stream: adopt this slot. If it already sits on
+      // the bank we are trying, reuse it; otherwise we will re-point it to a bypass bank.
+      p.slot = i;
+      if (ourBank) {
+        p.reuse = true;
+      }
     } else if (ourBank) {
       p.slot = i; p.smr = smr; p.s2cr = s2cr;
       p.error = "reserved context bank already used"; return p;
